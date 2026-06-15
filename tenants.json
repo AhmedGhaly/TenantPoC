@@ -1,0 +1,16 @@
+[
+  {
+    "Id": "c0d49163-bfbc-4403-a5ea-826f2ac6855a",
+    "Name": "testformswagger",
+    "Slug": "testformswagger",
+    "CreatedAt": "2026-06-14T10:48:49.2124023Z",
+    "DatabaseInfo": {
+      "Provider": 0,
+      "ContainerName": "tenant-testformswagger-c0d49163bfbc4403a5ea826f2ac6855a",
+      "ContainerId": "ce81632b01745bf704460342973c9a8df096164792630c1766733013b67e1dfa",
+      "Port": 14332,
+      "Password": "Tenant@08dd85728cb24",
+      "DatabaseName": "TenantDb"
+    }
+  }
+]

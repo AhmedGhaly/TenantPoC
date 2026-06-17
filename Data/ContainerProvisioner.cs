@@ -61,6 +61,8 @@ public class ContainerProvisioner
         await provisioner.CreateDatabaseAsync(cs, ct);
         await provisioner.ApplySchemaAsync(cs, ct);
 
+        await TakeBackupAsync(containerId, provider, password, ct);
+
         return dbInfo;
     }
 
@@ -181,8 +183,10 @@ public class ContainerProvisioner
         await EnsureDockerRunningAsync(ct);
 
         Console.WriteLine($"  Starting PostgreSQL container '{containerName}' from base image...");
+        var backupsPath = BackupsHostPathForTenant(tenant.Id.ToString());
         var containerId = await CreateContainerAsync(containerName, DatabaseProvider.Postgres, port, BaseImagePassword, ct,
-            imageOverride: $"{PostgresBaseImageRepo}:{BaseImageTag}");
+            imageOverride: $"{PostgresBaseImageRepo}:{BaseImageTag}",
+            bindMountHostPath: backupsPath);
 
         await WaitForDatabaseReadyAsync(containerId, DatabaseProvider.Postgres, port, BaseImagePassword, ct);
 
@@ -199,6 +203,8 @@ public class ContainerProvisioner
         var cmd = conn.CreateCommand();
         cmd.CommandText = $"ALTER USER postgres WITH PASSWORD '{tenantPwd}';";
         await cmd.ExecuteNonQueryAsync(ct);
+
+        await TakeBackupAsync(containerId, DatabaseProvider.Postgres, tenantPwd, ct);
 
         return new TenantDatabaseInfo
         {
@@ -220,8 +226,10 @@ public class ContainerProvisioner
         await EnsureDockerRunningAsync(ct);
 
         Console.WriteLine($"  Starting SQL Server container '{containerName}' from base image...");
+        var backupsPath = BackupsHostPathForTenant(tenant.Id.ToString());
         var containerId = await CreateContainerAsync(containerName, DatabaseProvider.SqlServer, port, tenantPwd, ct,
-            imageOverride: $"{MssqlBaseImageRepo}:{BaseImageTag}");
+            imageOverride: $"{MssqlBaseImageRepo}:{BaseImageTag}",
+            bindMountHostPath: backupsPath);
 
         await WaitForDatabaseReadyAsync(containerId, DatabaseProvider.SqlServer, port, BaseImagePassword, ct);
 
@@ -238,6 +246,8 @@ public class ContainerProvisioner
         var cmd = conn.CreateCommand();
         cmd.CommandText = $"ALTER LOGIN [sa] WITH PASSWORD = N'{tenantPwd}';";
         await cmd.ExecuteNonQueryAsync(ct);
+
+        await TakeBackupAsync(containerId, DatabaseProvider.SqlServer, tenantPwd, ct);
 
         return new TenantDatabaseInfo
         {
@@ -259,7 +269,9 @@ public class ContainerProvisioner
 
         await EnsureDockerRunningAsync(ct);
         await EnsureImageExistsAsync(provider, ct);
-        var containerId = await CreateContainerAsync(containerName, provider, port, pwd, ct);
+        var backupsPath = BackupsHostPathForTenant(tenant.Id.ToString());
+        var containerId = await CreateContainerAsync(containerName, provider, port, pwd, ct,
+            bindMountHostPath: backupsPath);
 
         return (containerId, containerName, port, pwd);
     }
@@ -336,7 +348,96 @@ public class ContainerProvisioner
         return port;
     }
 
-    private static async Task<string> CreateContainerAsync(string name, DatabaseProvider provider, int port, string pwd, CancellationToken ct, string? imageOverride = null)
+    private static string BackupsHostPathForTenant(string tenantId)
+    {
+        return $"{Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)}/myapp/tenants/{tenantId}/backups";
+    }
+
+    private static async Task TakeBackupAsync(string containerId, DatabaseProvider provider, string password, CancellationToken ct)
+    {
+        Console.Write("  Taking initial backup...");
+        try
+        {
+           var psi = new System.Diagnostics.ProcessStartInfo("docker")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+
+// Use ArgumentList to prevent string/quote mangling on Linux
+switch (provider)
+{
+    case DatabaseProvider.Postgres:
+        psi.ArgumentList.Add("exec");
+        psi.ArgumentList.Add("-e");
+        psi.ArgumentList.Add($"PGPASSWORD={password}");
+        psi.ArgumentList.Add(containerId);
+        psi.ArgumentList.Add("pg_dump");
+        psi.ArgumentList.Add("-U");
+        psi.ArgumentList.Add("postgres");
+        psi.ArgumentList.Add("-d");
+        psi.ArgumentList.Add("TenantDb");
+        psi.ArgumentList.Add("-F");
+        psi.ArgumentList.Add("c");
+        psi.ArgumentList.Add("-f");
+        psi.ArgumentList.Add("/app/backups/TenantDb_initial.dump");
+        break;
+
+    case DatabaseProvider.MongoDB:
+        psi.ArgumentList.Add("exec");
+        psi.ArgumentList.Add(containerId);
+        psi.ArgumentList.Add("mongodump");
+        psi.ArgumentList.Add("--username");
+        psi.ArgumentList.Add("root");
+        psi.ArgumentList.Add("--password");
+        psi.ArgumentList.Add(password);
+        psi.ArgumentList.Add("--authenticationDatabase");
+        psi.ArgumentList.Add("admin");
+        psi.ArgumentList.Add("--db");
+        psi.ArgumentList.Add("TenantDb");
+        psi.ArgumentList.Add("--out");
+        psi.ArgumentList.Add("/app/backups/");
+        break;
+
+    default: // MSSQL
+        psi.ArgumentList.Add("exec");
+        psi.ArgumentList.Add(containerId);
+        psi.ArgumentList.Add("/opt/mssql-tools18/bin/sqlcmd");
+        psi.ArgumentList.Add("-S");
+        psi.ArgumentList.Add("localhost");
+        psi.ArgumentList.Add("-U");
+        psi.ArgumentList.Add("sa");
+        psi.ArgumentList.Add("-P");
+        psi.ArgumentList.Add(password);
+        psi.ArgumentList.Add("-C");
+        psi.ArgumentList.Add("-Q");
+        psi.ArgumentList.Add("BACKUP DATABASE [TenantDb] TO DISK = N'/app/backups/TenantDb_initial.bak' WITH INIT, COMPRESSION");
+        break;
+}
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc is null)
+            {
+                Console.WriteLine(" warning: could not start docker exec process");
+                return;
+            }
+            var error = await proc.StandardError.ReadToEndAsync();
+            var output = await proc.StandardOutput.ReadToEndAsync();
+            await proc.WaitForExitAsync(ct);
+
+            if (proc.ExitCode == 0)
+                Console.WriteLine(" done.");
+            else
+                Console.WriteLine($" warning: backup exited with code {proc.ExitCode} ({error.Trim()})");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($" warning: backup failed ({ex.Message})");
+        }
+    }
+
+    private static async Task<string> CreateContainerAsync(string name, DatabaseProvider provider, int port, string pwd, CancellationToken ct, string? imageOverride = null, string? bindMountHostPath = null)
     {
         Console.WriteLine($"  Starting {provider} container '{name}' on port {port}...");
 
@@ -354,9 +455,24 @@ public class ContainerProvisioner
                 {
                     "ACCEPT_EULA=Y",
                     $"MSSQL_SA_PASSWORD={pwd}",
-                    //$"MSSQL_MEMORY_LIMIT_MB={MemoryLimitBytes / (1024 * 1024) * 3 / 4}"
                 })
         };
+
+        var binds = new List<string>();
+        if (bindMountHostPath is not null)
+        {
+            Directory.CreateDirectory(bindMountHostPath);
+            var psi = new System.Diagnostics.ProcessStartInfo("chmod", $"700 \"{bindMountHostPath}\"")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            proc?.WaitForExit();
+
+            binds.Add($"{bindMountHostPath}:/app/backups");
+        }
 
         var createParams = new CreateContainerParameters
         {
@@ -372,11 +488,7 @@ public class ContainerProvisioner
                         new() { HostPort = port.ToString() }
                     }
                 },
-                //Memory = MemoryLimitBytes,
-                //MemorySwap = MemoryLimitBytes,
-                //MemoryReservation = MemoryReservationBytes,
-                //NanoCPUs = CpuNanoCPUs,
-                //PidsLimit = PidsLimit
+                Binds = binds,
             }
         };
 

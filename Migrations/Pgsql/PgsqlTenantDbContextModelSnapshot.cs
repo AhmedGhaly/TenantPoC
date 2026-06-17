@@ -40,9 +40,23 @@ namespace TenantPoC.Migrations.Pgsql
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
+                    b.Property<string>("NameAr")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("NameEn")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Test")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.HasKey("Id");
 
-                    b.ToTable("WidgetsNewToTest", (string)null);
+                    b.ToTable("WidgetsNewTo", (string)null);
                 });
 #pragma warning restore 612, 618
         }

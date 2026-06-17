@@ -150,6 +150,149 @@ app.MapPost("/api/migrate/{id:guid}", async (
     }
 });
 
+// === Backup Endpoints ===
+
+app.MapPost("/api/backups/{id:guid}", async (
+    Guid id,
+    MasterStoreRepo store,
+    ContainerProvisioner provisioner,
+    ILogger<Program> logger) =>
+{
+    var tenant = store.GetById(id);
+    if (tenant is null) return Results.NotFound(new { error = "Tenant not found." });
+
+    try
+    {
+        await provisioner.TakeBackupForTenantAsync(tenant);
+        logger.LogInformation("Backup completed for tenant '{Tenant}'", tenant.Name);
+        return Results.Ok(new { tenant.Id, tenant.Name, Status = "ok" });
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Backup failed for tenant '{Tenant}'", tenant.Name);
+        return Results.Problem($"Backup failed: {ex.Message}", statusCode: 500);
+    }
+});
+
+app.MapPost("/api/backups", async (
+    MasterStoreRepo store,
+    ContainerProvisioner provisioner,
+    ILogger<Program> logger) =>
+{
+    var tenants = store.GetAll();
+    var results = new List<object>();
+    foreach (var t in tenants)
+    {
+        try
+        {
+            await provisioner.TakeBackupForTenantAsync(t);
+            results.Add(new { t.Id, t.Name, Status = "ok" });
+            logger.LogInformation("Backup completed for tenant '{Tenant}'", t.Name);
+        }
+        catch (Exception ex)
+        {
+            results.Add(new { t.Id, t.Name, Status = "failed", Error = ex.Message });
+            logger.LogError(ex, "Backup failed for tenant '{Tenant}'", t.Name);
+        }
+    }
+    return Results.Ok(results);
+});
+
+app.MapGet("/api/tenants/{id:guid}/backups", (Guid id, MasterStoreRepo store) =>
+{
+    var tenant = store.GetById(id);
+    if (tenant is null) return Results.NotFound(new { error = "Tenant not found." });
+
+    var backupsPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        "myapp", "tenants", id.ToString(), "backups");
+
+    if (!Directory.Exists(backupsPath))
+        return Results.Ok(new { tenant.Id, tenant.Name, Files = Array.Empty<object>() });
+
+    var files = Directory.GetFiles(backupsPath)
+        .Select(f => new FileInfo(f))
+        .Select(f => new { f.Name, SizeBytes = f.Length, LastModified = f.LastWriteTimeUtc })
+        .OrderByDescending(f => f.LastModified)
+        .ToList();
+
+    return Results.Ok(new { tenant.Id, tenant.Name, Files = files });
+});
+
+// === Seed Data Endpoint ===
+
+app.MapPost("/api/tenants/seed", async (
+    MasterStoreRepo store,
+    TenantConnectionFactory factory,
+    ILogger<Program> logger) =>
+{
+    var tenants = store.GetAll();
+    var results = new List<object>();
+    foreach (var t in tenants)
+    {
+        try
+        {
+            await using var ctx = factory.CreateDbContext(t);
+            var dummyWidgets = Enumerable.Range(1, 10).Select(i => new Widget
+            {
+                Name = $"Dummy Widget {i}",
+                NameEn = $"Dummy Widget {i} EN",
+                NameAr = $"Dummy Widget {i} AR",
+                Test = $"Seed data for tenant {t.Name} - widget {i}",
+                CreatedAt = DateTime.UtcNow
+            }).ToList();
+            ctx.Widgets.AddRange(dummyWidgets);
+            await ctx.SaveChangesAsync();
+            results.Add(new { t.Id, t.Name, Status = "ok", WidgetsSeeded = 10 });
+            logger.LogInformation("Seeded 10 widgets into tenant '{Tenant}'", t.Name);
+        }
+        catch (Exception ex)
+        {
+            results.Add(new { t.Id, t.Name, Status = "failed", Error = ex.Message });
+            logger.LogError(ex, "Seeding failed for tenant '{Tenant}'", t.Name);
+        }
+    }
+    return Results.Ok(results);
+});
+
+app.MapPost("/api/tenants/seed-and-backup", async (
+    MasterStoreRepo store,
+    TenantConnectionFactory factory,
+    ContainerProvisioner provisioner,
+    ILogger<Program> logger) =>
+{
+    var tenants = store.GetAll();
+    var results = new List<object>();
+    foreach (var t in tenants)
+    {
+        try
+        {
+            await using var ctx = factory.CreateDbContext(t);
+            var dummyWidgets = Enumerable.Range(1, 10).Select(i => new Widget
+            {
+                Name = $"Dummy Widget {i}",
+                NameEn = $"Dummy Widget {i} EN",
+                NameAr = $"Dummy Widget {i} AR",
+                Test = $"Seed data for tenant backup test - {t.Name} - widget {i}",
+                CreatedAt = DateTime.UtcNow
+            }).ToList();
+            ctx.Widgets.AddRange(dummyWidgets);
+            await ctx.SaveChangesAsync();
+
+            await provisioner.TakeBackupForTenantAsync(t);
+
+            results.Add(new { t.Id, t.Name, Status = "ok", WidgetsSeeded = 10, BackupTaken = true });
+            logger.LogInformation("Seeded + backed up tenant '{Tenant}'", t.Name);
+        }
+        catch (Exception ex)
+        {
+            results.Add(new { t.Id, t.Name, Status = "failed", Error = ex.Message });
+            logger.LogError(ex, "Seed+backup failed for tenant '{Tenant}'", t.Name);
+        }
+    }
+    return Results.Ok(results);
+});
+
 // === Widget Endpoints ===
 
 app.MapGet("/api/widgets", async (TenantConnectionFactory factory) =>

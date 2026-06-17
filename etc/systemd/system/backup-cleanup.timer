@@ -1,0 +1,17 @@
+[Unit]
+Description=Nightly trigger for MyApp Full Backup Maintenance (2:00 AM)
+Documentation=https://github.com/anomalyco/opencode
+
+[Timer]
+# Fire daily at 02:00:00 system time
+OnCalendar=*-*-* 02:00:00
+
+# Ensure the job runs even if the system was powered off at the scheduled time
+Persistent=true
+
+# If a run takes longer than 23 hours, the next run will be skipped
+AccuracySec=1min
+Unit=backup-cleanup.service
+
+[Install]
+WantedBy=timers.target

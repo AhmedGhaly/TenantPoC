@@ -1,0 +1,36 @@
+[Unit]
+Description=MyApp Full Backup & Retention Maintenance
+Documentation=https://github.com/anomalyco/opencode
+After=multi-user.target
+Wants=backup-cleanup.timer
+
+[Service]
+Type=oneshot
+ExecStart=/home/vboxuser/myapp/scripts/backup_all_tenants.sh
+ExecStart=/home/vboxuser/myapp/scripts/mssql_full_maintenance.sh
+
+# ── Resource throttling ──────────────────────────────────────────────
+# Run at lowest CPU priority – yield to any other task on the system.
+Nice=19
+CPUSchedulingPolicy=idle
+
+# I/O idle class – only submit disk I/O when the storage stack is idle.
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+
+# Prevent OOM from killing the main app; this script is expendable.
+OOMScoreAdjust=1000
+
+# Hard limit CPU usage to 50 % of one core as a safety net.
+CPUQuota=50%
+
+# Prevent the script from causing swap thrash.
+IODeviceLatencyTargetSec=5
+
+# Clean up after ourselves
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -16,10 +16,10 @@ set -o pipefail
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-TENANT_ROOT="${HOME:-/home/vboxuser}/myapp/tenants"
-VAULT_ROOT="${HOME:-/home/vboxuser}/myapp/vault"
+TENANT_ROOT="/home/vboxuser/myapp/tenants"
+VAULT_ROOT="/home/vboxuser/myapp/vault"
 RETENTION_COUNT="${RETENTION_COUNT:-7}"
-LOG_FILE="${HOME:-/home/vboxuser}/myapp/log/maintenance.log"
+LOG_FILE="/home/vboxuser/myapp/log/maintenance.log"
 LOCK_FILE="/tmp/.mssql_full_maintenance.lock"
 
 # ---------------------------------------------------------------------------
